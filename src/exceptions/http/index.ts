@@ -10,7 +10,7 @@ import { UnauthorizedException } from './UnauthorizedException';
 import { UnavailableException } from './UnavailableException';
 
 export function getHttpException(code: number): HttpException | null {
-  switch(code) {
+  switch (code) {
     case 400:
       return new BadRequestException();
     case 401:

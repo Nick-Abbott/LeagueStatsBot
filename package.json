@@ -6,7 +6,7 @@
   "author": "Nicholas Abbott",
   "license": "MIT",
   "scripts": {
-    "lint": "eslint src/**/*.ts"
+    "lint": "eslint src --ext .ts"
   },
   "dependencies": {
     "discord.js": "^13.6.0"
