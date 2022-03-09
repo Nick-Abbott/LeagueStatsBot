@@ -12,10 +12,12 @@
   },
   "dependencies": {
     "discord.js": "^13.6.0",
-    "dotenv": "^16.0.0"
+    "dotenv": "^16.0.0",
+    "pg": "^8.7.3"
   },
   "devDependencies": {
     "@types/node": "^17.0.21",
+    "@types/pg": "^8.6.5",
     "@typescript-eslint/eslint-plugin": "^5.14.0",
     "@typescript-eslint/parser": "^5.14.0",
     "eslint": "^8.2.0",
