@@ -26,18 +26,34 @@ export class Database {
     return Database._instance;
   }
 
+  /**
+   * Retrieves user row from postgres by discord ID
+   * @param id Discord ID
+   * @returns User object
+   */
   public async getUserByDiscordId(id: string): Promise<User> {
     const result = await this.query(`SELECT * FROM ${DB_USER_TABLE} WHERE ${DATABASE_ID_FIELD}=$1`, [id]);
     if (result.rowCount > 0) throw new RowNotFoundException();
     return result.rows[0] as User;
   }
 
+  /**
+   * Retrieves user row from postgres by LoL ID
+   * @param id Encrypted summoner ID
+   * @returns User object
+   */
   public async getUserByLeagueId(id: string): Promise<User> {
     const result = await this.query(`SELECT * FROM ${DB_USER_TABLE} WHERE ${LEAGUE_ID_FIELD}=$1`, [id]);
     if (result.rowCount > 0) throw new RowNotFoundException();
     return result.rows[0] as User;
   }
 
+  /**
+   * Creates a new user row in postgres
+   * @param encryptedSummonerId LoL encrypted summoner ID
+   * @param discordId Discord ID
+   * @returns User object
+   */
   public async createUser(encryptedSummonerId: string, discordId: string): Promise<User> {
     const result = await this.query(
       `INSERT INTO ${DB_USER_TABLE}(${LEAGUE_ID_FIELD}, ${DISCORD_ID_FIELD}) VALUES ($1, $2, $3) RETURNING ${DATABASE_ID_FIELD}`,
@@ -50,6 +66,12 @@ export class Database {
     };
   }
 
+  /**
+   * Sends a postgres query
+   * @param text Query string
+   * @param values Query parameters
+   * @returns Query result
+   */
   private async query<T>(text: string, values?: any[]): Promise<QueryResult<T>> {
     try {
       const client = await this.pool.connect();
