@@ -74,10 +74,7 @@ export class Database {
    */
   private async query<T>(text: string, values?: any[]): Promise<QueryResult<T>> {
     try {
-      const client = await this.pool.connect();
-      const result = await client.query<T>(text, values);
-      client.release();
-      return result;
+      return await this.pool.query<T>(text, values);
     } catch (err) {
       if ((err as Error).message === 'Query read timeout') throw new QueryTimeoutException();
       throw err;
