@@ -11,14 +11,20 @@ import { Summoner } from './Summoner';
  * Wrapper for Riot API requests
  */
 class RiotAPI {
+  private static _instance: RiotAPI;
   private headers: Headers;
 
-  constructor() {
+  private constructor() {
     this.headers = new Headers({
-      [HEADER_KEYS.USER_AGENT]: `LeagueStatsBot/${process.env.VERSION}`,
+      [HEADER_KEYS.USER_AGENT]: `LeagueStatsBot/v${process.env.npm_package_version}`,
       [HEADER_KEYS.ACCEPT_LANGUAGE]: 'en-US,en;q=0.9',
       [HEADER_KEYS.RIOT_TOKEN]: process.env.RIOT_TOKEN as string,
     });
+  }
+
+  public static get instance() {
+    if (!RiotAPI._instance) RiotAPI._instance = new RiotAPI();
+    return RiotAPI._instance;
   }
 
   /**
