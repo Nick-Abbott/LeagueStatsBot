@@ -6,10 +6,13 @@
   "author": "Nicholas Abbott",
   "license": "MIT",
   "scripts": {
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src --ext .ts",
+    "build": "tsc",
+    "start": "node ./dist/index.js"
   },
   "dependencies": {
-    "discord.js": "^13.6.0"
+    "discord.js": "^13.6.0",
+    "dotenv": "^16.0.0"
   },
   "devDependencies": {
     "@types/node": "^17.0.21",
