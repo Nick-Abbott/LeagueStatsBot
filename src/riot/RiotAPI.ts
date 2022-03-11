@@ -1,4 +1,4 @@
-import { HEADER_KEYS } from '../Constants';
+import { HEADER_KEYS, RIOT_URL } from '../Constants';
 import { getHttpException } from '../exceptions/http';
 import {
   CREATE_TOURNAMENT_CODE, LEAGUE_ENTRIES,
@@ -10,16 +10,16 @@ import { Summoner } from './Summoner';
 /**
  * Wrapper for Riot API requests
  */
-class RiotAPI {
+export class RiotAPI {
   private static _instance: RiotAPI;
-  private headers: Headers;
+  private headers: { [key: string]: string };
 
   private constructor() {
-    this.headers = new Headers({
+    this.headers = {
       [HEADER_KEYS.USER_AGENT]: `LeagueStatsBot/v${process.env.npm_package_version}`,
       [HEADER_KEYS.ACCEPT_LANGUAGE]: 'en-US,en;q=0.9',
       [HEADER_KEYS.RIOT_TOKEN]: process.env.RIOT_TOKEN as string,
-    });
+    };
   }
 
   public static get instance() {
@@ -33,7 +33,9 @@ class RiotAPI {
    * @returns String verification code
    */
   public async getVerificationCode(id: string): Promise<string> {
-    return this.callRiotApi(THIRD_PARTY_CODE(id)).then(response => response.text());
+    return this.callRiotApi(THIRD_PARTY_CODE(id))
+      .then(response => response.text())
+      .then(text => text.replace(/"/g, ''));
   }
 
   /**
@@ -104,7 +106,7 @@ class RiotAPI {
     const options: RequestInit = body
       ? { method: 'POST', headers: this.headers, body: JSON.stringify(body) }
       : { method: 'GET', headers: this.headers };
-    return fetch(`${RiotAPI}${endpoint}`, options).then(response => {
+    return fetch(`${RIOT_URL}${endpoint}`, options).then(response => {
       if (response.status > 200) return Promise.reject(getHttpException(response.status));
       return response;
     });

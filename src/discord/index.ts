@@ -1,14 +1,17 @@
-import Eris, { Client, CommandInteraction } from 'eris';
+import Eris, { Client, CommandInteraction, ComponentInteraction } from 'eris';
 import { CommandDefinition } from './Command';
 import Register from './commands/Register';
+import { ComponentRegistry } from './ComponentRegistry';
 
 export class Discord {
   private client: Client;
   private commands: Map<string, CommandDefinition>;
+  private componentRegistry: ComponentRegistry;
 
   constructor() {
     this.client = Eris(process.env.DISCORD_TOKEN!, { intents: [] });
     this.commands = new Map();
+    this.componentRegistry = new ComponentRegistry();
     this.registerCommands();
     this.setListeners();
     this.client.connect();
@@ -25,8 +28,10 @@ export class Discord {
         if (command) {
           if (command.functional) return command.command(interaction as any);
           // eslint-disable-next-line new-cap
-          return (new command.command(this.client)).execute(interaction as any);
+          return (new command.command(this.client, this.componentRegistry)).execute(interaction as any);
         }
+      } else if (interaction instanceof ComponentInteraction) {
+        return this.componentRegistry.executeComponentCallback(interaction);
       }
       return null;
     });
@@ -35,5 +40,9 @@ export class Discord {
   // TODO: Dynamic imports
   private registerCommands() {
     this.commands.set(Register.name, Register);
+  }
+
+  public registerComponent() {
+
   }
 }

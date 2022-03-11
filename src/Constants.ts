@@ -1,4 +1,4 @@
-export const RIOT_URL = 'americas.api.riotgames.com';
+export const RIOT_URL = 'https://na1.api.riotgames.com';
 
 export const HEADER_KEYS = {
   USER_AGENT: 'User-Agent',
