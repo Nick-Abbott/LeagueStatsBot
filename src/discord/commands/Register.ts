@@ -1,5 +1,6 @@
 import {
-  ChatInputApplicationCommandStructure, Client, ComponentInteraction, Constants, InteractionDataOptionsString,
+  Channel, ChatInputApplicationCommandStructure, Client, ComponentInteraction,
+  Constants, EmbedOptions, InteractionDataOptionsString, Member, Message,
 } from 'eris';
 import { v4 as uuid } from 'uuid';
 import { ClassCommand, CommandDefinition, DefinedInteraction } from '../Command';
@@ -8,21 +9,47 @@ import { RiotAPI } from '../../riot/RiotAPI';
 import { HttpException } from '../../exceptions/http/HttpException';
 import { Summoner } from '../../riot/Summoner';
 import { NotFoundException } from '../../exceptions/http/NotFoundException';
+import { OpGG } from '../../riot/OpGG';
+
+type RankedStats = {
+  totalGames: number,
+  winrate: number,
+  rank: string,
+  level: number,
+};
+
+type ApprovalSummary = { approved: boolean, reason?: string } & RankedStats;
 
 class Register extends ClassCommand<[InteractionDataOptionsString]> {
   private registrationId: string;
+  private confirmComponentId: string;
+  private approveComponentId: string;
+  private denyComponentId: string;
   private summonerName?: string;
+  private userId?: string;
+  private timer?: NodeJS.Timeout;
+
+  private static activeRegistrations: Set<string> = new Set();
 
   constructor(client: Client, componentRegistry: ComponentRegistry) {
     super(client, componentRegistry);
     this.registrationId = uuid();
+    this.confirmComponentId = `REGISTRATION::${this.registrationId}::CONFIRM`;
+    this.approveComponentId = `REGISTRATION::${this.registrationId}::APPROVE`;
+    this.denyComponentId = `REGISTRATION::${this.registrationId}::DENY`;
   }
 
   public async execute(interaction: DefinedInteraction<[InteractionDataOptionsString]>): Promise<void> {
-    const confirmId = `REGISTER::${this.registrationId}`;
     this.summonerName = interaction.data.options[0].value;
-    this.componentRegistry.registerComponent(confirmId, this.confirmRegistration);
-    await interaction.createMessage(
+    this.userId = interaction.member!.id;
+    if (Register.activeRegistrations.has(this.summonerName)) {
+      return interaction.createMessage('Your account is currently being verified. Please complete that process before trying again');
+    }
+    await interaction.acknowledge();
+    // TODO: Check database for duplicates
+    Register.activeRegistrations.add(this.summonerName);
+    this.componentRegistry.registerComponent(this.confirmComponentId, this.confirmRegistration);
+    return interaction.createFollowup(
       {
         content: 'Please verify your account by following the below steps in the next 90 seconds:\n'
           + '1. Login to your League account.\n'
@@ -37,46 +64,185 @@ class Register extends ClassCommand<[InteractionDataOptionsString]> {
               {
                 type: Constants.ComponentTypes.BUTTON,
                 style: Constants.ButtonStyles.SUCCESS,
-                custom_id: confirmId,
+                custom_id: this.confirmComponentId,
                 label: 'Complete',
               },
             ],
           },
         ],
       },
-    );
+    ).then(message => { this.timer = setTimeout(() => this.timeout(message), 90000); });
   }
 
-  private confirmRegistration = async (interaction: ComponentInteraction) => {
-    let summoner: Summoner;
+  private async approve(interaction: ComponentInteraction): Promise<void> {
+    Register.activeRegistrations.delete(this.summonerName!);
+    interaction.editOriginalMessage({ content: `${this.summonerName!} has been approved.` });
+    interaction.createFollowup({ content: 'Your account has been approved. You are all set!', flags: 64 });
+  }
+
+  private async deny(interaction: ComponentInteraction): Promise<void> {
+    Register.activeRegistrations.delete(this.summonerName!);
+    interaction.editOriginalMessage({ content: `${this.summonerName!} has been denied.` });
+    interaction.createFollowup({ content: 'Your account has been denied.', flags: 64 });
+  }
+
+  private async timeout(message: Message<Channel>): Promise<void> {
+    Register.activeRegistrations.delete(this.summonerName!);
+    this.componentRegistry.removeComponent(this.confirmComponentId);
+    message.edit({ content: 'Verification timed out', components: [] });
+  }
+
+  private async getSummoner(interaction: ComponentInteraction): Promise<Summoner | boolean> {
     try {
-      summoner = await RiotAPI.instance.getSummonerByName(this.summonerName!);
+      return await RiotAPI.instance.getSummonerByName(this.summonerName!);
     } catch (err) {
       if (err instanceof HttpException) {
         if (err instanceof NotFoundException) {
-          return await interaction.createMessage(`Your summoner name ${this.summonerName} wasn't found. Please check the spelling and try again.`);
+          Register.activeRegistrations.delete(this.summonerName!);
+          interaction.createFollowup(`Your summoner name ${this.summonerName} wasn't found. Please check the spelling and try again.`);
+          return true;
         }
         if (err.httpStatusCode >= 500) {
-          return await interaction.createMessage('The Riot API has experienced an error. Please try again later');
+          interaction.createFollowup('The Riot API has experienced an error. Please try again later');
+          return false;
         }
       }
-      return await interaction.createMessage('The bot has experienced an error. Please reach out to an admin for assistance');
+      Register.activeRegistrations.delete(this.summonerName!);
+      interaction.editOriginalMessage({ content: 'The bot has experienced an error. Please reach out to an admin for assistance', components: [] });
+      return true;
     }
+  }
+
+  private async smurfCheck(summoner: Summoner): Promise<ApprovalSummary> {
+    const entries = await RiotAPI.instance.getLeagueEntries(summoner.id);
+    const soloQueue = entries.find(entry => entry.queueType === 'RANKED_SOLO_5x5');
+
+    if (!soloQueue) {
+      return {
+        approved: false, reason: '0 games played < 150', rank: 'Unranked', totalGames: 0, winrate: 0, level: summoner.summonerLevel,
+      };
+    }
+    const stats: RankedStats = {
+      totalGames: soloQueue.wins + soloQueue.losses,
+      winrate: soloQueue.wins / (soloQueue.wins + soloQueue.losses),
+      rank: `${soloQueue.tier} ${soloQueue.rank}`,
+      level: summoner.summonerLevel,
+    };
+    if (summoner.summonerLevel < 100) return { approved: false, reason: `Summoner level ${summoner.summonerLevel} < 100`, ...stats };
+    if (stats.totalGames < 150) return { approved: false, reason: `${stats.totalGames} games played < 150`, ...stats };
+    if (stats.winrate > 0.55) return { approved: false, reason: `${stats.winrate * 100}% winrate > 55%`, ...stats };
+    return { approved: true, ...stats };
+  }
+
+  private getManualApprovalEmbed(member: Member, summoner: Summoner, summary: ApprovalSummary): EmbedOptions {
+    return {
+      title: `${member.username}#${member.discriminator}`,
+      description: `<@${member.id}>`,
+      fields: [
+        {
+          name: 'League IGN',
+          value: `[${summoner.name}](${OpGG.getPlayerLink(summoner)})`,
+        },
+        {
+          name: 'Rank',
+          value: summary.rank,
+        },
+        {
+          name: 'Winrate',
+          value: `${summary.winrate.toFixed(2)}`,
+        },
+        {
+          name: 'Games Played',
+          value: `${summary.totalGames}`,
+        },
+        {
+          name: 'Level',
+          value: `${summary.level}`,
+        },
+        {
+          name: 'Auto Approval Failure Reason',
+          value: `${summary.reason!}`,
+        },
+      ],
+    };
+  }
+
+  private confirmRegistration = async (interaction: ComponentInteraction): Promise<boolean> => {
+    await interaction.acknowledge();
+    if (interaction.member!.id !== this.userId) return false;
+    const summoner = await this.getSummoner(interaction);
+    if (typeof summoner === 'boolean') return summoner;
     try {
       const code = await RiotAPI.instance.getVerificationCode(summoner.id);
-      if (code === this.registrationId) return await interaction.createMessage('Your account has been approved. You are all set!');
-      return await interaction.createMessage('The code you entered is incorrect. Please re-register to try again.');
+      if (code === this.registrationId) {
+        clearTimeout(this.timer!);
+        interaction.editOriginalMessage({ content: `Verifying ${this.summonerName!}`, components: [] });
+        const smurfCheck = await this.smurfCheck(summoner);
+        if (smurfCheck.approved) {
+          this.approve(interaction);
+          return true;
+        }
+        this.componentRegistry.registerComponent(this.approveComponentId, this.manualConfirm(interaction, true));
+        this.componentRegistry.registerComponent(this.denyComponentId, this.manualConfirm(interaction, false));
+        interaction.createFollowup({
+          content: 'Your account has been forwarded to the staff for manual vetting. Please wait for them to approve your registration.',
+          flags: 64,
+        });
+        this.client.createMessage('952002687455596574', {
+          embed: this.getManualApprovalEmbed(interaction.member!, summoner, smurfCheck),
+          components: [
+            {
+              type: Constants.ComponentTypes.ACTION_ROW,
+              components: [
+                {
+                  type: Constants.ComponentTypes.BUTTON,
+                  custom_id: this.approveComponentId,
+                  style: Constants.ButtonStyles.SUCCESS,
+                  label: 'Approve',
+                },
+                {
+                  type: Constants.ComponentTypes.BUTTON,
+                  custom_id: this.denyComponentId,
+                  style: Constants.ButtonStyles.DANGER,
+                  label: 'Deny',
+                },
+              ],
+            },
+          ],
+        });
+        return true;
+      }
+      interaction.createFollowup('The code you entered is incorrect. Please try again.');
+      return false;
     } catch (err) {
       if (err instanceof HttpException) {
         if (err instanceof NotFoundException) {
-          return await interaction.createMessage('Your code was not found. Please try again.');
+          interaction.createFollowup('Your code was not found. Please enter it and try again.');
+          return false;
         }
         if (err.httpStatusCode >= 500) {
-          return await interaction.createMessage('The Riot API has experienced an error. Please try again later');
+          interaction.createFollowup('The Riot API has experienced an error. Please try again later');
+          return false;
         }
       }
-      return await interaction.createMessage('The bot has experienced an error. Please reach out to an admin for assistance');
+      Register.activeRegistrations.delete(this.summonerName!);
+      interaction.editOriginalMessage({ content: 'The bot has experienced an error. Please reach out to an admin for assistance', components: [] });
+      return true;
     }
+  };
+
+  private manualConfirm = (initInteraction: ComponentInteraction, confirm: boolean) => async (modInteraction: ComponentInteraction): Promise<boolean> => {
+    if (confirm) {
+      modInteraction.editParent({ content: `Approved by <@${modInteraction.member!.id}>`, components: [] });
+      this.approve(initInteraction);
+    } else {
+      modInteraction.editParent({ content: `Denied by <@${modInteraction.member!.id}>`, components: [] });
+      this.deny(initInteraction);
+    }
+    this.componentRegistry.removeComponent(this.approveComponentId);
+    this.componentRegistry.removeComponent(this.denyComponentId);
+    Register.activeRegistrations.delete(this.summonerName!);
+    return false;
   };
 }
 

@@ -1,4 +1,5 @@
 export const RIOT_URL = 'https://na1.api.riotgames.com';
+export const OPGG_URL = 'https://na.op.gg';
 
 export const HEADER_KEYS = {
   USER_AGENT: 'User-Agent',
