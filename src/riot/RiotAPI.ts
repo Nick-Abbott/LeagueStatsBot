@@ -1,3 +1,4 @@
+import pLimit from 'p-limit';
 import { HEADER_KEYS, RIOT_URL } from '../Constants';
 import { getHttpException } from '../exceptions/http';
 import {
@@ -6,6 +7,8 @@ import {
 } from './Endpoints';
 import { LeagueEntry } from './LeagueEntry';
 import { Summoner } from './Summoner';
+
+const limit = pLimit(5);
 
 /**
  * Wrapper for Riot API requests
@@ -47,6 +50,10 @@ export class RiotAPI {
     return this.getRiotJson<Summoner>(SUMMONER_BY_ID(id));
   }
 
+  public async getSummonersById(ids: string[]): Promise<Summoner[]> {
+    return Promise.all(ids.map(id => this.getSummonerById(id)));
+  }
+
   /**
    * Retrieves summoner information based on player's summoner name
    * @param name Summoner name
@@ -76,7 +83,7 @@ export class RiotAPI {
       mapType: 'SUMMONERS_RIFT',
       spectatorType: 'ALL',
     };
-    return this.callRiotApi(CREATE_TOURNAMENT_CODE(+<string>process.env.TOURNEY_ID), body)
+    return this.callRiotApi(CREATE_TOURNAMENT_CODE(+<string>process.env.TOURNEY_ID), body, 'https://americas.api.riotgames.com')
       .then(response => response.json() as Promise<string[]>)
       .then(list => list[0]);
   }
@@ -102,11 +109,21 @@ export class RiotAPI {
    * @param body JSON body to send with request
    */
   private async callRiotApi(endpoint: string, body: object): Promise<Response>;
-  private async callRiotApi(endpoint: string, body?: object): Promise<Response> {
+  private async callRiotApi(endpoint: string, host: string): Promise<Response>;
+  private async callRiotApi(endpoint: string, body: object, host: string): Promise<Response>;
+  private async callRiotApi(endpoint: string, bodyOrHost?: string | object, hostUrl: string = RIOT_URL): Promise<Response> {
+    let body: object | undefined;
+    let host: string;
+    if (typeof bodyOrHost === 'string') {
+      host = bodyOrHost;
+    } else {
+      body = bodyOrHost;
+      host = hostUrl;
+    }
     const options: RequestInit = body
       ? { method: 'POST', headers: this.headers, body: JSON.stringify(body) }
       : { method: 'GET', headers: this.headers };
-    return fetch(`${RIOT_URL}${endpoint}`, options).then(response => {
+    return limit<[string, RequestInit], Response>(fetch, `${host}${endpoint}`, options).then(response => {
       if (response.status > 200) return Promise.reject(getHttpException(response.status));
       return response;
     });

@@ -1,9 +1,11 @@
+import { RankString } from './Rank';
+
 export interface LeagueEntry {
   readonly leagueId: string;
   readonly summonerId: string;
   readonly summonerName: string;
   readonly queueType: string;
-  readonly tier: string;
+  readonly tier: RankString;
   readonly rank: string;
   readonly leaguePoints: number;
   readonly wins: number;

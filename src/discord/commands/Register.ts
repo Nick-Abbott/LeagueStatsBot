@@ -1,20 +1,24 @@
 import {
-  Channel, ChatInputApplicationCommandStructure, Client, ComponentInteraction,
+  Channel, ChatInputApplicationCommandStructure, CommandInteraction, ComponentInteraction,
   Constants, EmbedOptions, InteractionDataOptionsString, Member, Message,
 } from 'eris';
 import { v4 as uuid } from 'uuid';
 import { ClassCommand, CommandDefinition, DefinedInteraction } from '../Command';
-import { ComponentRegistry } from '../ComponentRegistry';
 import { RiotAPI } from '../../riot/RiotAPI';
 import { HttpException } from '../../exceptions/http/HttpException';
 import { Summoner } from '../../riot/Summoner';
 import { NotFoundException } from '../../exceptions/http/NotFoundException';
 import { OpGG } from '../../riot/OpGG';
+import { Rank } from '../../riot/Rank';
+import { Discord } from '..';
+import { TierHelper } from '../TierHelper';
+import { Database } from '../../database/Database';
+import { RowNotFoundException } from '../../exceptions/database/RowNotFoundException';
 
 type RankedStats = {
   totalGames: number,
   winrate: number,
-  rank: string,
+  rank: Rank,
   level: number,
 };
 
@@ -25,14 +29,15 @@ class Register extends ClassCommand<[InteractionDataOptionsString]> {
   private confirmComponentId: string;
   private approveComponentId: string;
   private denyComponentId: string;
-  private summonerName?: string;
+  private summoner?: Summoner;
   private userId?: string;
   private timer?: NodeJS.Timeout;
+  private summary?: ApprovalSummary;
 
   private static activeRegistrations: Set<string> = new Set();
 
-  constructor(client: Client, componentRegistry: ComponentRegistry) {
-    super(client, componentRegistry);
+  constructor(client: Discord) {
+    super(client);
     this.registrationId = uuid();
     this.confirmComponentId = `REGISTRATION::${this.registrationId}::CONFIRM`;
     this.approveComponentId = `REGISTRATION::${this.registrationId}::APPROVE`;
@@ -40,15 +45,41 @@ class Register extends ClassCommand<[InteractionDataOptionsString]> {
   }
 
   public async execute(interaction: DefinedInteraction<[InteractionDataOptionsString]>): Promise<void> {
-    this.summonerName = interaction.data.options[0].value;
+    // Parse input
+    const summonerName = interaction.data.options[0].value;
     this.userId = interaction.member!.id;
-    if (Register.activeRegistrations.has(this.summonerName)) {
+
+    // Check if account is in registration process
+    if (Register.activeRegistrations.has(summonerName)) {
       return interaction.createMessage('Your account is currently being verified. Please complete that process before trying again');
     }
+
+    // Begin registration
     await interaction.acknowledge();
-    // TODO: Check database for duplicates
-    Register.activeRegistrations.add(this.summonerName);
-    this.componentRegistry.registerComponent(this.confirmComponentId, this.confirmRegistration);
+    Register.activeRegistrations.add(summonerName);
+
+    // Validate account is not already registered
+    try {
+      this.summoner = await this.getSummoner(summonerName, interaction);
+    } catch (err) {
+      Register.activeRegistrations.delete(summonerName);
+      return Promise.resolve();
+    }
+    try {
+      await Database.instance.getUserByLeagueId(this.summoner.accountId);
+      interaction.createFollowup(`Account ${summonerName} is already registered`);
+      Register.activeRegistrations.delete(summonerName);
+      return await Promise.resolve();
+    } catch (err) {
+      if (!(err instanceof RowNotFoundException)) {
+        interaction.createFollowup('The bot has experienced an error. Please reach out to an admin for assistance');
+        Register.activeRegistrations.delete(summonerName);
+        return Promise.resolve();
+      }
+    }
+
+    // Set up button callback
+    this.client.componentRegistry.registerComponent(this.confirmComponentId, this.confirmRegistration);
     return interaction.createFollowup(
       {
         content: 'Please verify your account by following the below steps in the next 90 seconds:\n'
@@ -75,77 +106,87 @@ class Register extends ClassCommand<[InteractionDataOptionsString]> {
   }
 
   private async approve(interaction: ComponentInteraction): Promise<void> {
-    Register.activeRegistrations.delete(this.summonerName!);
-    interaction.editOriginalMessage({ content: `${this.summonerName!} has been approved.` });
+    Register.activeRegistrations.delete(this.summoner!.name);
+    try {
+      await Database.instance.getUserByDiscordId(this.userId!)
+        .catch(err => {
+          if (err instanceof RowNotFoundException) return Database.instance.createUser(this.userId!);
+          return Promise.reject(err);
+        })
+        .then(user => Database.instance.addAccount(user.id, this.summoner!.accountId));
+    } catch (err) {
+      interaction.createFollowup('The bot has experienced an error. Please reach out to an admin for assistance');
+      return;
+    }
+
+    interaction.editOriginalMessage({ content: `${this.summoner!.name} has been approved.` });
     interaction.createFollowup({ content: 'Your account has been approved. You are all set!', flags: 64 });
+    TierHelper.setTier(interaction.member!, TierHelper.getTier(this.summary!.rank), this.client);
   }
 
   private async deny(interaction: ComponentInteraction): Promise<void> {
-    Register.activeRegistrations.delete(this.summonerName!);
-    interaction.editOriginalMessage({ content: `${this.summonerName!} has been denied.` });
+    Register.activeRegistrations.delete(this.summoner!.name);
+    interaction.editOriginalMessage({ content: `${this.summoner!.name} has been denied.` });
     interaction.createFollowup({ content: 'Your account has been denied.', flags: 64 });
   }
 
   private async timeout(message: Message<Channel>): Promise<void> {
-    Register.activeRegistrations.delete(this.summonerName!);
-    this.componentRegistry.removeComponent(this.confirmComponentId);
+    Register.activeRegistrations.delete(this.summoner!.name);
+    this.client.componentRegistry.removeComponent(this.confirmComponentId);
     message.edit({ content: 'Verification timed out', components: [] });
   }
 
-  private async getSummoner(interaction: ComponentInteraction): Promise<Summoner | boolean> {
+  private async getSummoner(summonerName: string, interaction: CommandInteraction): Promise<Summoner> {
     try {
-      return await RiotAPI.instance.getSummonerByName(this.summonerName!);
+      return await RiotAPI.instance.getSummonerByName(summonerName);
     } catch (err) {
       if (err instanceof HttpException) {
         if (err instanceof NotFoundException) {
-          Register.activeRegistrations.delete(this.summonerName!);
-          interaction.createFollowup(`Your summoner name ${this.summonerName} wasn't found. Please check the spelling and try again.`);
-          return true;
-        }
-        if (err.httpStatusCode >= 500) {
+          interaction.createFollowup(`Your summoner name ${this.summoner!.name} wasn't found. Please check the spelling and try again.`);
+        } else if (err.httpStatusCode >= 500) {
           interaction.createFollowup('The Riot API has experienced an error. Please try again later');
-          return false;
         }
+      } else {
+        interaction.createFollowup('The bot has experienced an error. Please reach out to an admin for assistance');
       }
-      Register.activeRegistrations.delete(this.summonerName!);
-      interaction.editOriginalMessage({ content: 'The bot has experienced an error. Please reach out to an admin for assistance', components: [] });
-      return true;
+      Register.activeRegistrations.delete(this.summoner!.name);
+      throw err;
     }
   }
 
-  private async smurfCheck(summoner: Summoner): Promise<ApprovalSummary> {
-    const entries = await RiotAPI.instance.getLeagueEntries(summoner.id);
+  private async smurfCheck(): Promise<ApprovalSummary> {
+    const entries = await RiotAPI.instance.getLeagueEntries(this.summoner!.id);
     const soloQueue = entries.find(entry => entry.queueType === 'RANKED_SOLO_5x5');
 
     if (!soloQueue) {
       return {
-        approved: false, reason: '0 games played < 150', rank: 'Unranked', totalGames: 0, winrate: 0, level: summoner.summonerLevel,
+        approved: false, reason: '0 games played < 150', rank: new Rank('UNRANKED'), totalGames: 0, winrate: 0, level: this.summoner!.summonerLevel,
       };
     }
     const stats: RankedStats = {
       totalGames: soloQueue.wins + soloQueue.losses,
       winrate: soloQueue.wins / (soloQueue.wins + soloQueue.losses),
-      rank: `${soloQueue.tier} ${soloQueue.rank}`,
-      level: summoner.summonerLevel,
+      rank: new Rank(soloQueue.tier, soloQueue.rank),
+      level: this.summoner!.summonerLevel,
     };
-    if (summoner.summonerLevel < 100) return { approved: false, reason: `Summoner level ${summoner.summonerLevel} < 100`, ...stats };
+    if (this.summoner!.summonerLevel < 100) return { approved: false, reason: `Summoner level ${this.summoner!.summonerLevel} < 100`, ...stats };
     if (stats.totalGames < 150) return { approved: false, reason: `${stats.totalGames} games played < 150`, ...stats };
     if (stats.winrate > 0.55) return { approved: false, reason: `${stats.winrate * 100}% winrate > 55%`, ...stats };
     return { approved: true, ...stats };
   }
 
-  private getManualApprovalEmbed(member: Member, summoner: Summoner, summary: ApprovalSummary): EmbedOptions {
+  private getManualApprovalEmbed(member: Member, summary: ApprovalSummary): EmbedOptions {
     return {
       title: `${member.username}#${member.discriminator}`,
       description: `<@${member.id}>`,
       fields: [
         {
           name: 'League IGN',
-          value: `[${summoner.name}](${OpGG.getPlayerLink(summoner)})`,
+          value: `[${this.summoner!.name}](${OpGG.getPlayerLink(this.summoner!.name)})`,
         },
         {
           name: 'Rank',
-          value: summary.rank,
+          value: summary.rank.toString(),
         },
         {
           name: 'Winrate',
@@ -170,26 +211,24 @@ class Register extends ClassCommand<[InteractionDataOptionsString]> {
   private confirmRegistration = async (interaction: ComponentInteraction): Promise<boolean> => {
     await interaction.acknowledge();
     if (interaction.member!.id !== this.userId) return false;
-    const summoner = await this.getSummoner(interaction);
-    if (typeof summoner === 'boolean') return summoner;
     try {
-      const code = await RiotAPI.instance.getVerificationCode(summoner.id);
+      const code = await RiotAPI.instance.getVerificationCode(this.summoner!.id);
       if (code === this.registrationId) {
         clearTimeout(this.timer!);
-        interaction.editOriginalMessage({ content: `Verifying ${this.summonerName!}`, components: [] });
-        const smurfCheck = await this.smurfCheck(summoner);
-        if (smurfCheck.approved) {
+        interaction.editOriginalMessage({ content: `Verifying ${this.summoner!.name}`, components: [] });
+        this.summary = await this.smurfCheck();
+        if (this.summary.approved) {
           this.approve(interaction);
           return true;
         }
-        this.componentRegistry.registerComponent(this.approveComponentId, this.manualConfirm(interaction, true));
-        this.componentRegistry.registerComponent(this.denyComponentId, this.manualConfirm(interaction, false));
+        this.client.componentRegistry.registerComponent(this.approveComponentId, this.manualConfirm(interaction, true));
+        this.client.componentRegistry.registerComponent(this.denyComponentId, this.manualConfirm(interaction, false));
         interaction.createFollowup({
           content: 'Your account has been forwarded to the staff for manual vetting. Please wait for them to approve your registration.',
           flags: 64,
         });
-        this.client.createMessage('952002687455596574', {
-          embed: this.getManualApprovalEmbed(interaction.member!, summoner, smurfCheck),
+        this.client.client.createMessage('952002687455596574', {
+          embed: this.getManualApprovalEmbed(interaction.member!, this.summary),
           components: [
             {
               type: Constants.ComponentTypes.ACTION_ROW,
@@ -225,7 +264,7 @@ class Register extends ClassCommand<[InteractionDataOptionsString]> {
           return false;
         }
       }
-      Register.activeRegistrations.delete(this.summonerName!);
+      Register.activeRegistrations.delete(this.summoner!.name);
       interaction.editOriginalMessage({ content: 'The bot has experienced an error. Please reach out to an admin for assistance', components: [] });
       return true;
     }
@@ -239,9 +278,9 @@ class Register extends ClassCommand<[InteractionDataOptionsString]> {
       modInteraction.editParent({ content: `Denied by <@${modInteraction.member!.id}>`, components: [] });
       this.deny(initInteraction);
     }
-    this.componentRegistry.removeComponent(this.approveComponentId);
-    this.componentRegistry.removeComponent(this.denyComponentId);
-    Register.activeRegistrations.delete(this.summonerName!);
+    this.client.componentRegistry.removeComponent(this.approveComponentId);
+    this.client.componentRegistry.removeComponent(this.denyComponentId);
+    Register.activeRegistrations.delete(this.summoner!.name);
     return false;
   };
 }
