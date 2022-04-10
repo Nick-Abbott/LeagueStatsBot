@@ -113,7 +113,7 @@ class Register extends ClassCommand<[InteractionDataOptionsString]> {
           if (err instanceof RowNotFoundException) return Database.instance.createUser(this.userId!);
           return Promise.reject(err);
         })
-        .then(user => Database.instance.addAccount(user.id, this.summoner!.accountId));
+        .then(user => Database.instance.addAccount(user.discordId, this.summoner!.accountId));
     } catch (err) {
       interaction.createFollowup('The bot has experienced an error. Please reach out to an admin for assistance');
       return;
@@ -143,13 +143,12 @@ class Register extends ClassCommand<[InteractionDataOptionsString]> {
       if (err instanceof HttpException) {
         if (err instanceof NotFoundException) {
           interaction.createFollowup(`Your summoner name ${this.summoner!.name} wasn't found. Please check the spelling and try again.`);
-        } else if (err.httpStatusCode >= 500) {
+        } else {
           interaction.createFollowup('The Riot API has experienced an error. Please try again later');
         }
       } else {
         interaction.createFollowup('The bot has experienced an error. Please reach out to an admin for assistance');
       }
-      Register.activeRegistrations.delete(this.summoner!.name);
       throw err;
     }
   }

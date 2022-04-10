@@ -7,10 +7,14 @@ export const HEADER_KEYS = {
   RIOT_TOKEN: 'X-Riot-Token',
 };
 
-export const DB_USER_TABLE = 'users';
-export const DB_ACCOUNT_TABLE = 'accounts';
+export const DB_USER_TABLE = 'player';
+export const DB_ACCOUNT_TABLE = 'account';
 
-export const DATABASE_ID_FIELD = 'id';
-export const ACCOUNT_FOREGIN_KEY_FIELD = 'user_id';
+export const ACCOUNT_FOREGIN_KEY_FIELD = 'player_id';
+export const ACCOUNT_SERVER_ID_FIELD = 'player_server_id';
 export const LEAGUE_ID_FIELD = 'encrypted_summoner_id';
-export const DISCORD_ID_FIELD = 'discord_id';
+export const DISCORD_ID_FIELD = 'id';
+export const SERVER_ID_FIELD = 'server_id';
+export const NAME_FIELD = 'name';
+
+export const COMMON_SELECT = `SELECT ${DISCORD_ID_FIELD},${LEAGUE_ID_FIELD}`;
